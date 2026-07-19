@@ -102,23 +102,8 @@ python3 scanner.py --analyze-traffic 10.0.0.50 --output flow.json
 python3 scanner.py
 ```
 
-```
-┌─────────────────────────────────────────┐
-│           SELECT INPUT METHOD           │
-├─────────────────────────────────────────┤
-│  1.  Single IP                          │
-│  2.  IP Range (CIDR)                    │
-│  3.  From File                          │
-│  4.  Shodan Query                       │
-│  5.  Falcon/Sparrow Signatures          │
-│                                         │
-│  ═══ NEW ═══                            │
-│  6.  Flock Instance Discovery           │
-│  7.  Traffic Analysis                   │
-│                                         │
-│  8.  Return                             │
-└─────────────────────────────────────────┘
-```
+<img width="543" height="648" alt="IMG_5603" src="https://github.com/user-attachments/assets/85ebf61b-789e-4c81-ae98-9ad8c9092fed" />
+
 
 ---
 
