@@ -15,6 +15,7 @@
 
 Multi-mode Flock Safety security assessment tool.
 
+DISCALIMER: FOR AUTHORIZED SECURITY TESTING ONLY XO
 ---
 
 ##  Capabilities
@@ -262,7 +263,7 @@ FLOCK_scan/
 ├── masscan_wrapper.sh    # Masscan integration
 └── README.md
 ```
-
+###MOS DEF LOOKING TO MAKE THIS TOOL STRONGER AND BETTER. PLEASE DM ME OR SUBMIT A PULL REQUEST IF YOU CAN HELP.
 ---
 
 <p align="center">
