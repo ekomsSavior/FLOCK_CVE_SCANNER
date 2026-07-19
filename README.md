@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Flock_Scan-v2.0-red?style=flat-square&logo=appveyor" />
-  <img src="https://img.shields.io/badge/CVEs-4-brightgreen?style=flat-square" />
+  <img src="https://img.shields.io/badge/Flock_Scan-v3.1-red?style=flat-square&logo=appveyor" />
+  <img src="https://img.shields.io/badge/CVEs-4-brightgreen-brightgreen?style=flat-square" />
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" />
 </p>
 
@@ -13,9 +13,7 @@
 ╚═╝     ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝
 ```
 
-Multi-mode Flock assessment tool.
-
-DISCALIMER: FOR AUTHORIZED SECURITY TESTING ONLY XO
+Multi-mode Flock Safety security assessment tool.
 
 ---
 
@@ -153,52 +151,115 @@ TLS Traffic Categories:
 
 ##  Quick Start
 
+> Most features require root. Run with `sudo` when scanning or capturing.
+
 ```bash
 pip install requests
-python3 scanner.py
+sudo python3 scanner.py
 ```
 
 ### CVE Scanning
 ```bash
-python3 scanner.py -t 192.168.1.100
-python3 scanner.py -f targets.txt --exploit
-python3 scanner.py --output results.json -v
+sudo python3 scanner.py -t 192.168.1.100
+sudo python3 scanner.py -f targets.txt --exploit
+sudo python3 scanner.py --output results.json -v
 ```
 
 ### Instance Discovery
 ```bash
-python3 scanner.py --discover 192.168.1.0/24
-python3 scanner.py --discover 10.0.0.0/16 --output found.json
+sudo python3 scanner.py --discover 192.168.1.0/24
+sudo python3 scanner.py --discover 10.0.0.0/16 --output found.json
 ```
 
 ### Traffic Analysis
 ```bash
-python3 scanner.py --analyze-traffic 192.168.1.100
-python3 scanner.py --analyze-traffic 10.0.0.50 --output flow.json
+sudo python3 scanner.py --analyze-traffic 192.168.1.100
+sudo python3 scanner.py --analyze-traffic 10.0.0.50 --output flow.json
 ```
 
 ### Traffic Tap (Live Capture)
 ```bash
 # Requires scapy: pip install scapy
-python3 scanner.py --tap-interface eth0 --tap-output report.json
+sudo python3 scanner.py --tap-interface eth0 --tap-output report.json
 ```
 
 ### Traffic Tap (PCAP Analysis)
 ```bash
-python3 scanner.py --tap-pcap capture.pcap --tap-output report.json
+sudo python3 scanner.py --tap-pcap capture.pcap --tap-output report.json
 ```
 
 ### Traffic Tap (Pipe from tcpdump)
 ```bash
-tcpdump -i eth0 -l -nn | python3 scanner.py --tap-pipe -v
+sudo tcpdump -i eth0 -l -nn | sudo python3 scanner.py --tap-pipe -v
+```
+
+### Enrichment Mode (v3.0+)
+```bash
+# Add --enrich to any scan for extra data collection
+sudo python3 scanner.py -t 192.168.1.100 --enrich
+sudo python3 scanner.py -f targets.txt --enrich --output enriched_scan.json
+sudo python3 scanner.py --discover 192.168.1.0/24 --enrich -v
+```
+
+**What --enrich adds:**
+- **Banner grabber** -- HTTP headers (Server, X-Powered-By, Via, cookies), FTP banner (SpeedPourer version), TLS cert (SANs, issuer, expiry), SSH version
+- **Cloud provider enrichment** -- IP → ASN/org/provider via ip-api.com + WHOIS fallback (AWS, GCP, Azure, Cloudflare, etc.)
+- **Telemetry detection** -- Google Analytics IDs, Hotjar, Sentry, Facebook Pixel, Segment, and 30+ other SaaS services
+- **ADB deep collect** -- WiFi SSID/BSSID, gateway, DNS servers, ARP table, uptime, processes, battery state, installed packages, logcat errors
+- **Network map** -- Passive subnet discovery via ARP table + MAC OUI vendor resolution
+- **Credential extractor** -- Scans HTTP bodies for leaked M2M OAuth client_id/secret, webhook API keys, Auth0 configs, org UUIDs
+- **Prometheus scraper** -- Probes local network for open Prometheus/Grafana instances, scrapes targets + metrics
+- **S3 URL catcher** -- Extracts signed S3 image URLs from captured traffic (flock-hibiki-inbox, hotlist, webhook payloads)
+
+---
+
+## Drive-By WiFi Recon (Monitor Mode)
+
+```bash
+# 1. Put adapter in monitor mode first
+iwconfig  # find your interface
+sudo airmon-ng start wlan0
+
+# 2. Capture camera traffic (PCAP is best, pipe is for quick checks)
+sudo airodump-ng wlan0mon -w capture --output-format pcap
+# OR
+sudo tcpdump -i wlan0mon -w capture.pcap
+# OR pipe live (lightweight, DNS + FRP only)
+sudo tcpdump -i wlan0mon -l -nn | sudo python3 scanner.py --tap-pipe -v
+
+# 3. Back home: offline analysis extracts everything
+sudo python3 scanner.py --tap-pcap capture.pcap --enrich --output report.json -v
+```
+
+> **Why PCAP, not pipe?** `--tap-pcap` uses scapy to extract DNS queries, TLS SNI, and HTTP payloads from every packet. `--tap-pipe` only tracks connections — it cannot capture the HTTP bodies or TLS hostnames you need for credential extraction, S3 URLs, or telemetry. Always record to PCAP first.
+
+### What you'll get from the air
+
+| Signal | Captures | Module |
+|--------|----------|--------|
+| WiFi packets | Camera DNS queries, HTTP requests, admin page data | tap.py + banner_grabber.py |
+| TLS SNI | Every HTTPS hostname the camera talks to (no decryption) | tap.py |
+| HTTP bodies | Admin config pages, leaked API keys, webhook URLs | creds_extractor.py |
+| S3 URLs | Signed LPR image links from flock-hibiki-inbox bucket | s3_url_catcher.py |
+| Prometheus | Monitoring targets if camera's network has Prometheus | prometheus_scraper.py |
+| FRP tunnels | Fast Reverse Proxy connections (cloud tunnel detection) | tap.py |
+| Telemetry | Google Analytics, Sentry, FB Pixel in admin page JS | telemetry.py |
+
+### Output files created during enrich
+
+When you run `--enrich`, the tool auto-saves findings to your output directory:
+
+```
+creds_192_168_1_100.txt   # All leaked credentials found
+s3_urls_192_168_1_100.txt  # All S3 signed URLs captured
 ```
 
 ---
 
-##  Interactive Menu
+## Interactive Menu
 
 ```bash
-python3 scanner.py
+sudo python3 scanner.py
 ```
 
 ```
@@ -245,11 +306,33 @@ Includes dedicated `FLOCK_DISCOVERY` queries:
 
 ```bash
 # Scan only (no exploitation)
-python3 scanner.py -t 192.168.1.100
+sudo python3 scanner.py -t 192.168.1.100
 
 # Scan + exploit (requires confirmation)
-python3 scanner.py -t 192.168.1.100 --exploit
+sudo python3 scanner.py -t 192.168.1.100 --exploit
 ```
+
+---
+
+##  All Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-t`, `--target` | Single target IP | -- |
+| `-f`, `--file` | File with targets (one per line) | -- |
+| `-o`, `--output` | Output file (JSON) | -- |
+| `-v`, `--verbose` | Verbose output | off |
+| `-T`, `--threads` | Number of scan threads | 10 |
+| `--timeout` | Connection timeout (seconds) | 5 |
+| `--exploit` | Enable exploitation (requires confirmation) | off |
+| `--enrich` | Run enrichment modules (banners, cloud provider, telemetry, ADB deep, network map, creds, Prometheus, S3 URLs) | off |
+| `--cve` | Scan specific CVE only | all |
+| `--discover` | Discover Flock instances in subnet (CIDR) | -- |
+| `--analyze-traffic` | Analyze cloud vs local data flow for a camera IP | -- |
+| `--tap-interface` | Traffic Tap: live capture from interface | -- |
+| `--tap-pcap` | Traffic Tap: analyze PCAP file | -- |
+| `--tap-pipe` | Traffic Tap: read from stdin (tcpdump pipe) | off |
+| `--tap-output` | Traffic Tap: save report to JSON file | -- |
 
 ---
 
@@ -257,14 +340,24 @@ python3 scanner.py -t 192.168.1.100 --exploit
 
 ```
 FLOCK_scan/
-├── scanner.py            # Main tool (CVE scan + discovery + traffic analysis)
-├── flock_tap.py          # Passive traffic monitor (callbacks, FRP, SNI, DNS)
-├── shodan_queries.py     # Shodan dork generator
-├── run_scanner.sh        # Quick-launch script
-├── masscan_wrapper.sh    # Masscan integration
+├── scanner.py                # Main tool (CVE scan + discovery + traffic analysis)
+├── flock_tap.py              # Passive traffic monitor (callbacks, FRP, SNI, DNS)
+├── shodan_queries.py         # Shodan dork generator
+├── run_scanner.sh            # Quick-launch script
+├── masscan_wrapper.sh        # Masscan integration
+├── modules/                  # Enrichment modules (v3.1+)
+│   ├── __init__.py
+│   ├── banner_grabber.py     # HTTP/FTP/TLS/SSH banner collection
+│   ├── cloud_enrich.py       # IP → ASN/org/cloud provider
+│   ├── telemetry.py          # Analytics, pixels, JS endpoints
+│   ├── adb_deep.py           # Extended ADB props (route, wifi, DNS, processes)
+│   ├── network_map.py        # ARP-based passive subnet discovery
+│   ├── creds_extractor.py    # Leaked M2M tokens, webhook API keys, auth configs
+│   ├── prometheus_scraper.py # Prometheus/Grafana discovery on local network
+│   └── s3_url_catcher.py     # Signed S3 image URL extraction from traffic
 └── README.md
 ```
-### MOS DEF LOOKING TO MAKE THIS TOOL STRONGER AND BETTER. PLEASE DM ME OR SUBMIT A PULL REQUEST IF YOU CAN HELP.
+
 ---
 
 <p align="center">
