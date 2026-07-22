@@ -131,13 +131,15 @@ def test_classify_device_local_station(tap):
 
 
 def test_classify_device_offline(tap):
-    assert tap.classify_device("ip") == "OFFLINE_OR_UNMONITORED"
+    # Unified vocabulary: no traffic → INDETERMINATE (was OFFLINE_OR_UNMONITORED).
+    assert tap.classify_device("ip") == "INDETERMINATE"
 
 
 # ── classify_camera (fallback via device data) ──────────────────────────────
 
 def test_classify_camera_no_data(tap):
-    assert tap.classify_camera("10.0.0.99") == "NO_DATA"
+    # Unified vocabulary: no data → INDETERMINATE (was NO_DATA).
+    assert tap.classify_camera("10.0.0.99") == "INDETERMINATE"
 
 
 def test_classify_camera_flock_sni_fallback(tap):
@@ -227,3 +229,104 @@ def test_known_flock_ip_correlation(tap):
     tap._handle_packet_scapy(pkt)
     assert tap.flow_stats["10.0.0.5"]["cloud_api"] >= 1
     assert tap.classify_device("10.0.0.5") == "CLOUD_CONNECTED"
+
+
+# ── audit-integrity: unified verdict vocabulary ─────────────────────────────
+
+def test_device_and_camera_classifiers_agree(tap):
+    """Both public names fold into one canonical verdict."""
+    tap.flow_stats["10.0.0.5"]["cloud_dns"] = 1
+    assert tap.classify_device("10.0.0.5") == tap.classify_camera("10.0.0.5") == "CLOUD_CONNECTED"
+
+
+# ── audit-integrity: report buckets partition every tracked IP ──────────────
+
+def test_summary_buckets_reconcile(tap):
+    tap.start_time = 0
+    tap.flow_stats["10.0.0.1"]["cloud_dns"] = 1        # cloud
+    tap.flow_stats["10.0.0.2"]["connections"] = 2      # local
+    _ = tap.flow_stats["10.0.0.3"]                      # indeterminate (touched only)
+    s = tap.generate_report()["summary"]
+    assert s["counts_reconcile"] is True
+    assert s["cloud_connected"] + s["local_station"] + s["indeterminate"] == s["total_ips_tracked"]
+
+
+def test_indeterminate_device_still_counted(tap):
+    """Regression: the old report dropped NO_DATA/OFFLINE from every bucket."""
+    tap.start_time = 0
+    _ = tap.flow_stats["10.0.0.9"]
+    assert tap.generate_report()["summary"]["indeterminate"] == 1
+
+
+# ── audit-integrity: CLOUD_IP evidence is recorded ──────────────────────────
+
+@requires_scapy
+def test_cloud_ip_contact_recorded_for_evidence(tap):
+    dst = flock_tap.FLOCK_CLOUD_IPS[0]
+    pkt = _rebuild(IP(src="192.168.1.120", dst=dst) / TCP(sport=47000, dport=443, flags="A"))
+    tap._handle_packet_scapy(pkt)
+    assert dst in tap.devices["192.168.1.120"]["cloud_ip_contacts"]
+
+
+# ── audit-integrity: memory capping keeps counters exact ────────────────────
+
+@requires_scapy
+def test_samples_capped_but_counter_exact():
+    tap = FlockTrafficTap(max_samples=3)
+    for i in range(10):
+        pkt = _rebuild(IP(src="192.168.1.130", dst="10.0.0.20") /
+                       TCP(sport=48000 + i, dport=8080, flags="S"))
+        tap._handle_packet_scapy(pkt)
+    dev = tap.devices["192.168.1.130"]
+    assert len(dev["connections"]) == 3          # sample list bounded
+    assert dev["counts"]["conn"] == 10           # counter exact
+    rep = tap.generate_report()
+    assert rep["devices"]["192.168.1.130"]["connections_count"] == 10
+
+
+# ── audit-integrity: FRP auth stores a descriptor, not raw payload ──────────
+
+@requires_scapy
+def test_frp_auth_stores_descriptor_not_payload(tap):
+    pkt = _rebuild(IP(src="192.168.1.140", dst="10.0.0.30") /
+                   TCP(sport=49000, dport=8080, flags="PA") /
+                   Raw(load=b'{"proxy_type":"tcp","secret":"topsecret"}'))
+    tap._handle_packet_scapy(pkt)
+    rec = [f for f in tap.devices["192.168.1.140"]["frp_tunnels"]
+           if f["type"] == "frp_auth_payload"][0]
+    assert "payload_preview" not in rec
+    assert rec["matched_keyword"] == "proxy_type"
+    assert rec["payload_len"] == 41
+    assert "topsecret" not in str(rec)   # secret bytes must not be retained
+
+
+# ── audit-integrity: optional non-Flock IP redaction ────────────────────────
+
+@requires_scapy
+def test_redaction_hashes_non_flock_ip_keeps_flock_clear():
+    tap = FlockTrafficTap(redact_non_flock_ips=True)
+    flock = flock_tap.FLOCK_CLOUD_IPS[0]
+    p1 = _rebuild(IP(src="192.168.1.150", dst="8.8.8.8") / TCP(sport=50000, dport=8080, flags="S"))
+    tap._handle_packet_scapy(p1)
+    assert tap.devices["192.168.1.150"]["connections"][0]["dst"].startswith("redacted:")
+    p2 = _rebuild(IP(src="192.168.1.151", dst=flock) / TCP(sport=50001, dport=7000, flags="S"))
+    tap._handle_packet_scapy(p2)
+    assert tap.devices["192.168.1.151"]["frp_tunnels"][0]["dst"] == flock
+
+
+# ── audit-integrity: destination summary is metadata-only ───────────────────
+
+@requires_scapy
+def test_destination_summary_is_metadata_only(tap):
+    tap.start_time = 0
+    for i in range(6):   # clear the <5-packet filter
+        tap._handle_packet_scapy(
+            _rebuild(IP(src="192.168.1.160", dst="10.0.0.40") /
+                     TCP(sport=51000 + i, dport=8080, flags="S")))
+    tap.on_tls_sni("api.flocksafety.com", "192.168.1.160", "10.0.0.40")
+    tap.devices["192.168.1.160"]["tls_snis"].append(
+        {"timestamp": 0, "src": "192.168.1.160", "dst": "10.0.0.40", "sni": "api.flocksafety.com"})
+    tap.devices["192.168.1.160"]["counts"]["sni"] += 1
+    dsum = tap.generate_report()["devices"]["192.168.1.160"]["destination_summary"]
+    assert set(dsum.keys()) == {"dns_domains", "tls_snis", "flock_cloud_ips"}
+    assert "api.flocksafety.com" in dsum["tls_snis"]
